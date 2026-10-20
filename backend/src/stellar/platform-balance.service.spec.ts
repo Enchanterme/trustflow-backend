@@ -54,7 +54,7 @@ describe('PlatformBalanceService', () => {
     loggerErrorSpy = jest.spyOn(service['logger'], 'error').mockImplementation();
 
     // Reset lastAlertTime before each test
-    service['lastAlertTime'] = 0;
+    service['lastAlertTime'] = { WARNING: 0, CRITICAL: 0 };
   });
 
   afterEach(() => {
@@ -153,6 +153,28 @@ describe('PlatformBalanceService', () => {
         }),
       );
     });
+
+    it('should allow CRITICAL alert even if WARNING alert was recently sent', async () => {
+      // First, trigger a WARNING alert (balance at 8.0, below low threshold of 10 but above critical of 5)
+      stellarService.getBalance.mockResolvedValue('8.0');
+      await service.checkPlatformBalance();
+      expect(webhookService.dispatch).toHaveBeenCalledTimes(1);
+      expect(webhookService.dispatch).toHaveBeenCalledWith(
+        'platform.balance_alert',
+        expect.objectContaining({ level: 'WARNING' }),
+      );
+
+      // Reset mock to simulate balance dropping further into CRITICAL territory
+      stellarService.getBalance.mockResolvedValue('3.0'); // Below critical threshold of 5
+
+      // CRITICAL alert should still fire even though WARNING was triggered recently (within cooldown)
+      await service.checkPlatformBalance();
+      expect(webhookService.dispatch).toHaveBeenCalledTimes(2);
+      expect(webhookService.dispatch).toHaveBeenLastCalledWith(
+        'platform.balance_alert',
+        expect.objectContaining({ level: 'CRITICAL' }),
+      );
+    });
   });
 
   describe('checkPlatformBalance - cooldown mechanism', () => {
@@ -167,7 +189,7 @@ describe('PlatformBalanceService', () => {
       await service.checkPlatformBalance();
       expect(webhookService.dispatch).toHaveBeenCalledTimes(1); // Still just 1
       expect(loggerDebugSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Alert cooldown active, skipping notification'),
+        expect.stringContaining('Alert cooldown active for WARNING, skipping notification'),
       );
     });
 
@@ -180,7 +202,7 @@ describe('PlatformBalanceService', () => {
 
       // Simulate cooldown expiry by manipulating lastAlertTime
       const alertCooldownMs = 3600000; // 1 hour
-      service['lastAlertTime'] = Date.now() - (alertCooldownMs + 1000); // 1 second past cooldown
+      service['lastAlertTime'] = { WARNING: Date.now() - (alertCooldownMs + 1000), CRITICAL: 0 }; // 1 second past cooldown
 
       // Third alert after cooldown expires
       await service.checkPlatformBalance();
@@ -194,8 +216,8 @@ describe('PlatformBalanceService', () => {
       await service.checkPlatformBalance();
       const afterFirstAlert = Date.now();
 
-      expect(service['lastAlertTime']).toBeGreaterThanOrEqual(beforeFirstAlert);
-      expect(service['lastAlertTime']).toBeLessThanOrEqual(afterFirstAlert);
+      expect(service['lastAlertTime'].WARNING).toBeGreaterThanOrEqual(beforeFirstAlert);
+      expect(service['lastAlertTime'].WARNING).toBeLessThanOrEqual(afterFirstAlert);
     });
   });
 
